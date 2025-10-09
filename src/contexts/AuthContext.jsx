@@ -91,11 +91,26 @@ export const AuthProvider = ({ children }) => {
   };
 
   // Logout user
-  const logout = () => {
-    localStorage.removeItem('token');
-    delete axios.defaults.headers.common['x-auth-token'];
-    setUser(null);
-    setIsAuthenticated(false);
+  const logout = async () => {
+    try {
+      // Call backend logout API to update status in database
+      const token = localStorage.getItem('token');
+      if (token) {
+        await axios.post(`${API_URL}/auth/logout`, {}, {
+          headers: { 'x-auth-token': token }
+        }).catch(err => {
+          console.warn('Logout API call failed:', err);
+        });
+      }
+    } catch (error) {
+      console.error('Error during logout:', error);
+    } finally {
+      // Clean up local state regardless of API call result
+      localStorage.removeItem('token');
+      delete axios.defaults.headers.common['x-auth-token'];
+      setUser(null);
+      setIsAuthenticated(false);
+    }
   };
 
   return (

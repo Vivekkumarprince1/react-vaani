@@ -1,16 +1,28 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useContext } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { LanguagePreferences } from './LanguagePreferences';
 import { useTranslation } from '../contexts/TranslationContext';
+import { AuthContext } from '../contexts/AuthContext';
+import socketManager from '../utils/socketManager';
 
 const Header = ({ user, toggleSidebar, handleLanguageChange }) => {
     const navigate = useNavigate();
     const { t, currentLanguage } = useTranslation();
+    const { logout: authLogout } = useContext(AuthContext);
     const [showUserMenu, setShowUserMenu] = useState(false);
     const menuRef = useRef(null);
 
-    const logout = () => {
+    const logout = async (token) => {
+        // Cleanup socket connection and notify server
+        socketManager.handleLogout();
+        
+        // Call AuthContext logout to clear state and call backend API
+        await authLogout();
+
         localStorage.removeItem('token');
+        delete axios.defaults.headers.common['x-auth-token'];
+        
+        // Navigate to login
         navigate('/login');
     };
 

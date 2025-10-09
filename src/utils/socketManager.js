@@ -27,6 +27,7 @@ class SocketManager {
   initialize(token) {
     this.token = token;
     this.connect();
+    this.setupBrowserEventListeners();
     return this.socket;
   }
 
@@ -77,11 +78,17 @@ class SocketManager {
       console.log('Socket connected:', this.socket.id);
       this.isConnected = true;
       this.attemptCount = 0;
+      
+      // Start heartbeat when connected
+      this.startHeartbeat();
     });
 
     this.socket.on('disconnect', (reason) => {
       console.log('Socket disconnected:', reason);
       this.isConnected = false;
+      
+      // Stop heartbeat when disconnected
+      this.stopHeartbeat();
     });
 
     this.socket.on('connect_error', (error) => {
@@ -93,6 +100,12 @@ class SocketManager {
         this.useWebSocket = false;
         this.connect();
       }
+    });
+
+    // Handle pong response from server
+    this.socket.on('pong', () => {
+      // Pong received - connection is alive
+      console.debug('Pong received from server');
     });
 
     // Restore custom event handlers
@@ -221,13 +234,36 @@ class SocketManager {
 
   /**
    * Cleanup socket connection
+   * @param {boolean} isLogout - Whether this is a logout action
    */
-  cleanup() {
+  cleanup(isLogout = false) {
+    // Stop heartbeat
+    this.stopHeartbeat();
+    
+    // Remove browser event listeners
+    this.removeBrowserEventListeners();
+    
     if (this.socket) {
+      // If this is a logout, notify the server before disconnecting
+      if (isLogout && this.isConnected) {
+        try {
+          this.socket.emit('userLogout');
+        } catch (error) {
+          console.warn('Failed to emit userLogout:', error);
+        }
+      }
+      
       this.socket.disconnect();
       this.socket = null;
     }
     this.isConnected = false;
+  }
+
+  /**
+   * Handle user logout - cleanup socket and notify server
+   */
+  handleLogout() {
+    this.cleanup(true);
   }
 
   /**
@@ -244,6 +280,84 @@ class SocketManager {
    */
   isSocketConnected() {
     return this.isConnected;
+  }
+
+  /**
+   * Setup heartbeat to keep connection alive and update lastActive
+   */
+  startHeartbeat() {
+    // Clear any existing heartbeat
+    this.stopHeartbeat();
+    
+    // Send ping every 25 seconds (before server's 60s pingTimeout)
+    this.heartbeatInterval = setInterval(() => {
+      if (this.socket && this.isConnected) {
+        this.socket.emit('ping');
+      }
+    }, 25000);
+    
+    console.log('Heartbeat started');
+  }
+
+  /**
+   * Stop heartbeat interval
+   */
+  stopHeartbeat() {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+      console.log('Heartbeat stopped');
+    }
+  }
+
+  /**
+   * Setup browser event listeners for tab/window close
+   */
+  setupBrowserEventListeners() {
+    if (typeof window === 'undefined') return;
+
+    // Handle page unload (close tab/window)
+    const handleBeforeUnload = () => {
+      if (this.socket && this.isConnected) {
+        // Send synchronous disconnect signal
+        this.socket.emit('userLogout');
+        this.socket.disconnect();
+      }
+    };
+
+    // Handle visibility change (tab switch, minimize)
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        // User switched away from tab - could implement idle timeout here
+        console.log('Tab hidden - user may be idle');
+      } else {
+        // User came back to tab
+        console.log('Tab visible again');
+        if (!this.isConnected && this.token) {
+          console.log('Reconnecting...');
+          this.connect();
+        }
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    // Store cleanup function
+    this.browserEventCleanup = () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }
+
+  /**
+   * Remove browser event listeners
+   */
+  removeBrowserEventListeners() {
+    if (this.browserEventCleanup) {
+      this.browserEventCleanup();
+      this.browserEventCleanup = null;
+    }
   }
 }
 

@@ -1,6 +1,7 @@
 
 import React, { useState } from 'react';
 import { useTranslation } from '../contexts/TranslationContext';
+import socketManager from '../utils/socketManager';
 
 const ContactList = ({ 
     users, 
@@ -90,31 +91,36 @@ const ContactList = ({
                     {!showGroups ? (
                         <div className="px-2">
                             <ul className="space-y-0.5">
-                                {users.map(user => (
+                                {users.map(contact => {
+                                    const contactId = String(contact.id || contact._id || '');
+                                    const currentUserId = String(user?.id || user?._id || '');
+                                    const isSelf = contactId !== '' && currentUserId !== '' && contactId === currentUserId;
+
+                                    const displayStatus = isSelf ? (socketManager.isSocketConnected() ? 'online' : 'offline') : (contact.status || 'offline');
+                                    const lastSeen = contact.lastSeen || contact.lastActive || contact.last_activity;
+
+                                    return (
                                     <li
-                                        key={user.id}
+                                        key={contact.id || contact._id}
                                         className={`flex items-center p-3 rounded-xl cursor-pointer transition-all duration-200 hover:bg-gray-100 ${
-                                            selectedUser?.id === user.id ? 'bg-emerald-50 hover:bg-emerald-100' : ''
+                                            selectedUser?.id === contact.id ? 'bg-emerald-50 hover:bg-emerald-100' : ''
                                         }`}
-                                        onClick={() => selectUser(user)}
+                                        onClick={() => selectUser(contact)}
                                     >
                                         <div className="relative">
                                             <div className="w-12 h-12 rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 text-white flex items-center justify-center text-lg font-semibold shadow-md">
-                                                {user.avatar}
+                                                {contact.avatar}
                                             </div>
-                                            {user.status === 'online' && (
-                                                <div className="absolute bottom-0 right-0 w-3.5 h-3.5 bg-green-500 rounded-full border-2 border-white"></div>
-                                            )}
                                         </div>
                                         <div className="ml-3 flex-1">
                                             <div className="flex items-center justify-between">
-                                                <div className="font-semibold text-gray-900">{user.name}</div>
+                                                <div className="font-semibold text-gray-900">{contact.name}</div>
                                                 <div className="text-xs text-gray-500">
-                                                    {user.status === 'online' ? t('online') : formatLastSeen(user.lastSeen)}
+                                                    {displayStatus === 'online' ? t('online') : formatLastSeen(lastSeen)}
                                                 </div>
                                             </div>
                                             <div className="text-sm text-gray-500 flex items-center space-x-1">
-                                                {user.status === 'online' ? (
+                                                {displayStatus === 'online' ? (
                                                     <>
                                                         <span className="w-2 h-2 bg-green-500 rounded-full"></span>
                                                         <span>{t('online')}</span>
@@ -128,7 +134,8 @@ const ContactList = ({
                                             </div>
                                         </div>
                                     </li>
-                                ))}
+                                    );
+                                })}
                             </ul>
                         </div>
                     ) : (
