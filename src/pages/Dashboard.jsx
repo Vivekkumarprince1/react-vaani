@@ -313,17 +313,28 @@ const Dashboard = () => {
       });
 
       console.log('Socket.IO initialization attempted');
+      console.log('Current user ID:', user?._id || user?.id);
 
       const handleGroupCallIncoming = (payload = {}) => {
+        console.log('🔔 [DEBUG] handleGroupCallIncoming called with payload:', payload);
+        
         try {
           const currentUserId = user?._id || user?.id;
-          if (!currentUserId) return;
+          if (!currentUserId) {
+            console.warn('⚠️ No current user ID, ignoring group call invitation');
+            return;
+          }
 
+          console.log(`   👤 Current user: ${currentUserId}`);
+          
           const participantIds = (payload.participants || []).map(p =>
             typeof p === 'string' ? p : p?.userId || p?.id
           ).filter(Boolean);
 
+          console.log(`   👥 Participant IDs in call:`, participantIds);
+
           if (!participantIds.some(id => id?.toString() === currentUserId.toString())) {
+            console.warn('⚠️ Current user is not in participant list, ignoring call');
             return;
           }
 
@@ -336,13 +347,13 @@ const Dashboard = () => {
             initiator: payload.initiator
           };
 
-          console.log('📣 Received group call invitation:', invitation);
+          console.log('✅ Received group call invitation:', invitation);
           setIncomingGroupCall(invitation);
           callSoundPlayer.playRingtone().catch(() => {
             console.log('Ringtone not played for group call invitation');
           });
         } catch (err) {
-          console.error('Failed to handle group call incoming payload:', err);
+          console.error('❌ Failed to handle group call incoming payload:', err);
         }
       };
 
@@ -353,8 +364,100 @@ const Dashboard = () => {
         handleGroupCallIncoming(invitation);
       };
 
+      console.log('🎧 Registering socket listeners for group calls...');
       socketManager.on('groupCallIncoming', handleGroupCallIncoming);
       socketManager.on('groupCallInvitation', handleGroupCallInvitation);
+      // Backwards compatibility: listen to different event name variants
+      socketManager.on('groupCallInitiated', (payload) => {
+        console.log('🔔 Received groupCallInitiated event (old name), converting to groupCallIncoming');
+        handleGroupCallIncoming(payload);
+      });
+      socketManager.on('group_incoming_call', (payload) => {
+        console.log('🔔 Received group_incoming_call (new unified name)');
+        handleGroupCallIncoming(payload);
+      });
+      console.log('✅ Socket listeners registered');
+
+      // Participant events (join/disconnect)
+      socketManager.on('participant_joined', (data) => {
+        console.log('🔔 participant_joined:', data);
+        try {
+          const { userId, username } = data || {};
+          // Show a small toast or UI message (simple console for now)
+          console.log(`✅ ${username} joined the call (${userId})`);
+          // If we were ringing or ringbacking, stop those sounds and play connect
+          try {
+            const current = callSoundPlayer.getCurrentSound && callSoundPlayer.getCurrentSound();
+            if (current === 'ringback' || current === 'ringtone') {
+              callSoundPlayer.stopAll();
+              callSoundPlayer.playConnect().catch(() => {});
+            }
+          } catch (e) {
+            console.warn('Error handling sounds on participant_joined:', e);
+          }
+          // Optionally refresh participants list if in a call
+          if (inGroupCall) {
+            // Trigger a re-fetch of the current call data or merge participant locally
+            // For now, append to groupCallData.participants if present
+            setGroupCallData(prev => {
+              if (!prev) return prev;
+              const exists = (prev.participants || []).some(p => (p.userId?._id || p.userId) === userId);
+              if (exists) return prev;
+              return { ...prev, participants: [...(prev.participants || []), { userId, username, status: 'joined' }] };
+            });
+          }
+        } catch (e) {
+          console.error('Error handling participant_joined:', e);
+        }
+      });
+
+      socketManager.on('participant_disconnected', (data) => {
+        console.log('⚠️ participant_disconnected:', data);
+        try {
+          const { userId, username, reason } = data || {};
+          // Show UI notification
+          console.warn(`⚠️ ${username} disconnected (${reason})`);
+          // Update groupCallData participants status
+          setGroupCallData(prev => {
+            if (!prev) return prev;
+            const participants = (prev.participants || []).map(p => {
+              const id = p.userId?._id || p.userId || p.id;
+              if (id && id.toString() === userId.toString()) {
+                return { ...p, status: 'left' };
+              }
+              return p;
+            });
+            return { ...prev, participants };
+          });
+        } catch (e) {
+          console.error('Error handling participant_disconnected:', e);
+        }
+      });
+
+      // Handle remote end of call (auto-end or explicit end)
+      socketManager.on('group_call_ended', (data) => {
+        try {
+          console.log('🔔 group_call_ended received:', data);
+          // Stop any ringing/ringback immediately
+          callSoundPlayer.stopAll();
+          // Play disconnect sound to notify user the call ended
+          callSoundPlayer.playDisconnect().catch(() => {
+            // ignore
+          });
+
+          // If this client is currently in the call, clean up local state
+          if (inGroupCall) {
+            setInGroupCall(false);
+            setGroupCallData(null);
+          }
+
+          // If there was an incoming call modal, dismiss it
+          if (incomingGroupCall) setIncomingGroupCall(null);
+
+        } catch (e) {
+          console.error('Error handling group_call_ended:', e);
+        }
+      });
 
       // Fetch pending group calls on socket connection
       const fetchPendingCallInvitations = async () => {
@@ -924,6 +1027,8 @@ const Dashboard = () => {
             });
             
             setInCall(true);
+            // Ensure sounds are stopped when the call becomes active
+            try { callSoundPlayer.stopAll(); } catch (e) { /* ignore */ }
             setIncomingCall(null);
           } catch (err) {
             console.error('Error answering deferred offer:', err);
@@ -963,9 +1068,11 @@ const Dashboard = () => {
           console.log('Could not play connect sound:', err.message);
         });
         
-        setInCall(true);
-        setIncomingCall(null);
-        setAcceptingCall(false);
+  setInCall(true);
+  // Defensive: stop any remaining ringing/ringback
+  try { callSoundPlayer.stopAll(); } catch (e) { /* ignore */ }
+  setIncomingCall(null);
+  setAcceptingCall(false);
       }
     } catch (err) {
       console.error('Error answering call:', err);
@@ -1305,7 +1412,7 @@ const Dashboard = () => {
     // Handle call answered
     socketManager.on('callAnswered', async (data) => {
       console.log('✓ Call answered by:', data.from);
-      callSoundPlayer.stopAll();
+      try { callSoundPlayer.stopAll(); } catch (e) { console.warn('Error stopping sounds on callAnswered:', e); }
 
       if (data.callSessionId) {
         setActiveCallSession(prev => {

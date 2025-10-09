@@ -104,17 +104,21 @@ class SocketManager {
 
     // Development helper: log all incoming socket events to debug missing signals
     try {
-      if (process.env.NODE_ENV !== 'production') {
-        this.socket.onAny((event, ...args) => {
-          try {
+      // Always log in development, and specifically log group call events
+      this.socket.onAny((event, ...args) => {
+        try {
+          if (event.includes('group') || event.includes('call') || event.includes('Call')) {
+            console.log(`🔊 [SOCKET EVENT] ${event}:`, args);
+          } else if (process.env.NODE_ENV !== 'production') {
             console.debug('[socket.onAny] event:', event, 'args:', args);
-          } catch (e) {
-            // ignore
           }
-        });
-      }
+        } catch (e) {
+          // ignore
+        }
+      });
     } catch (e) {
       // some socket versions may not support onAny; ignore silently
+      console.warn('Socket.onAny not supported:', e);
     }
 
     // Bootstrap-level bridge: dispatch a DOM CustomEvent for incomingCall so code
