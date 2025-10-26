@@ -6,6 +6,7 @@ import { useTranslation } from '../contexts/TranslationContext';
 import socketManager from '../utils/socketManager';
 import { getIceServers } from '../utils/webrtcConfig';
 import callSoundPlayer from '../utils/callSounds';
+import notificationManager from '../utils/notificationManager';
 import Header from '../components/Header';
 import ContactList from '../components/ContactList';
 import MessageSection from '../components/MessageSection';
@@ -15,6 +16,7 @@ import Loader from '../components/Loader';
 import SocketStatus from '../components/SocketStatus';
 import CreateGroupModal from '../components/CreateGroupModal';
 import GroupManagementModal from '../components/GroupManagementModal';
+import NotificationSettings from '../components/NotificationSettings';
 
 const API_URL = import.meta.env.VITE_API_URL || '/api';
 
@@ -61,6 +63,10 @@ const Dashboard = () => {
   const [groupCallData, setGroupCallData] = useState(null);
   const [pendingGroupCalls, setPendingGroupCalls] = useState([]);
   const [incomingGroupCall, setIncomingGroupCall] = useState(null);
+  
+  // Notification settings
+  const [showNotificationSettings, setShowNotificationSettings] = useState(false);
+  const [notificationPermission, setNotificationPermission] = useState('default');
 
   const socketInstance = socketManager.getSocket();
 
@@ -83,6 +89,23 @@ const Dashboard = () => {
       navigate('/login');
     }
   }, [isAuthenticated, authLoading, navigate]);
+
+  // Initialize notification manager and check permission on mount
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    
+    const status = notificationManager.getPermissionStatus();
+    setNotificationPermission(status);
+    
+    // Auto-show notification settings banner if permission is default (not asked yet)
+    if (status === 'default') {
+      // Show settings after a brief delay
+      const timer = setTimeout(() => {
+        setShowNotificationSettings(true);
+      }, 2000);
+      return () => clearTimeout(timer);
+    }
+  }, []);
 
   // Fetch users
   const fetchUsers = async () => {
@@ -356,6 +379,37 @@ const Dashboard = () => {
           // If message is not for current view but is for this user, refresh unread counts
           if (!isSelfMessage) {
             fetchUnreadCounts();
+            
+            // Show browser notification for new message if:
+            // 1. Not sent by current user
+            // 2. Window is not focused OR message is not in current chat
+            if (document.hidden || !shouldAppend) {
+              const senderInfo = typeof msg.sender === 'object' ? msg.sender : null;
+              const senderName = senderInfo?.username || senderInfo?.name || 'Someone';
+              const isGroupMsg = Boolean(msg.room || msg.roomId);
+              const roomInfo = isGroupMsg ? roomsRef.current?.find(r => r._id === (msg.room || msg.roomId)) : null;
+              
+              notificationManager.showMessageNotification({
+                senderName: senderName,
+                content: msg.content,
+                isGroupMessage: isGroupMsg,
+                roomName: roomInfo?.name || 'Group',
+                messageId: msg._id || msg.id,
+                timestamp: msg.timestamp
+              }, () => {
+                // On click: focus window and select the appropriate chat
+                window.focus();
+                if (isGroupMsg && roomInfo) {
+                  selectRoom(roomInfo);
+                } else if (senderInfo) {
+                  // Find the user in the users list and select
+                  const sender = users.find(u => u.id === (senderInfo._id || senderInfo.id));
+                  if (sender) {
+                    selectUser(sender);
+                  }
+                }
+              });
+            }
           }
           
           return;
@@ -565,6 +619,26 @@ const Dashboard = () => {
           callSoundPlayer.playRingtone().catch(() => {
             console.log('Ringtone not played for group call invitation');
           });
+          
+          // Show browser notification if window is not focused
+          if (document.hidden) {
+            const initiatorName = invitation.initiator?.username || invitation.initiator?.name || 'Someone';
+            notificationManager.showIncomingCallNotification({
+              fromName: initiatorName,
+              callType: invitation.callType,
+              isGroupCall: true,
+              roomName: invitation.roomName,
+              callId: invitation.callId
+            }, () => {
+              // On accept from notification
+              window.focus();
+              joinGroupCall(invitation);
+            }, () => {
+              // On reject from notification
+              window.focus();
+              declineGroupCall(invitation);
+            });
+          }
         } catch (err) {
           console.error('❌ Failed to handle group call incoming payload:', err);
         }
@@ -1181,6 +1255,9 @@ const Dashboard = () => {
       // Enable audio playback (user has interacted by clicking answer)
       callSoundPlayer.enableUserInteraction();
       
+      // Close any active notifications
+      notificationManager.closeAllNotifications();
+      
       setAcceptingCall(true);
       callSoundPlayer.stopAll();
       setCallType(incomingCall.callType);
@@ -1329,6 +1406,10 @@ const Dashboard = () => {
   const rejectCall = () => {
     console.log('📵 Rejecting incoming call');
     callSoundPlayer.stopAll();
+    
+    // Close any active notifications
+    notificationManager.closeAllNotifications();
+    
     if (incomingCall) {
       const endCallData = { to: incomingCall.from };
       if (incomingCall.roomId) {
@@ -1353,6 +1434,9 @@ const Dashboard = () => {
     
     // Stop all sounds first
     callSoundPlayer.stopAll();
+    
+    // Close any active notifications
+    notificationManager.closeAllNotifications();
     
     // Play disconnect sound (non-blocking, allow failures)
     callSoundPlayer.playDisconnect().catch(() => {
@@ -1537,6 +1621,9 @@ const Dashboard = () => {
       setIncomingGroupCall(null);
       callSoundPlayer.stopAll();
       
+      // Close any active notifications
+      notificationManager.closeAllNotifications();
+      
       console.log('✅ Joined group call');
     } catch (error) {
       console.error('Error joining group call:', error);
@@ -1547,6 +1634,9 @@ const Dashboard = () => {
   // Decline group call
   const declineGroupCall = async (callData) => {
     try {
+      // Close any active notifications
+      notificationManager.closeAllNotifications();
+      
       const token = localStorage.getItem('token');
       await axios.post(
         `${API_URL}/chat/group-call/${callData.callId}/decline`,
@@ -1612,6 +1702,26 @@ const Dashboard = () => {
       callSoundPlayer.playRingtone().catch(() => {
         console.log('Ringtone not played - showing visual notification instead');
       });
+      
+      // Show browser notification if window is not focused
+      if (document.hidden) {
+        notificationManager.showIncomingCallNotification({
+          fromName: data.fromName,
+          callType: data.callType,
+          isGroupCall: Boolean(data.roomId),
+          roomName: data.roomName,
+          callId: data.callSessionId
+        }, () => {
+          // On accept from notification
+          window.focus();
+          answerCall();
+        }, () => {
+          // On reject from notification
+          window.focus();
+          rejectCall();
+        });
+      }
+      
       // Emit an app-level ACK so the caller knows the callee UI received the event
       try {
         socketManager.emit('incomingCallAck', { from: data.from, to: user?.id || user?._id, callSessionId: data.callSessionId });
@@ -1820,29 +1930,68 @@ const Dashboard = () => {
         user={user}
         toggleSidebar={toggleSidebar}
         handleLanguageChange={handleLanguageChange}
+        onShowNotificationSettings={() => setShowNotificationSettings(true)}
       />
 
-      {/* Main content */}
+      {/* Main content - responsive layout */}
       <div className="flex flex-1 overflow-hidden pt-16">
-        {/* Sidebar */}
-        <ContactList
-          users={users}
-          rooms={rooms}
-          selectedUser={selectedUser}
-          selectedRoom={selectedRoom}
-          selectUser={selectUser}
-          selectRoom={selectRoom}
-          createRoom={createRoom}
-          showSidebar={showSidebar}
-          onManageGroup={(room) => {
-            console.log('Opening group management for room:', room);
-            console.log('Current user:', user);
-            setManagingRoom(room);
-          }}
-          user={user}
-          unreadByContact={unreadByContact}
-          unreadByRoom={unreadByRoom}
-        />
+        {/* Sidebar - hidden on mobile, visible on lg */}
+        <div className="hidden lg:flex lg:flex-col w-80 border-r border-gray-200">
+          <ContactList
+            users={users}
+            rooms={rooms}
+            selectedUser={selectedUser}
+            selectedRoom={selectedRoom}
+            selectUser={selectUser}
+            selectRoom={selectRoom}
+            createRoom={createRoom}
+            showSidebar={showSidebar}
+            onManageGroup={(room) => {
+              console.log('Opening group management for room:', room);
+              console.log('Current user:', user);
+              setManagingRoom(room);
+            }}
+            user={user}
+            unreadByContact={unreadByContact}
+            unreadByRoom={unreadByRoom}
+          />
+        </div>
+        
+        {/* Mobile sidebar overlay */}
+        {showSidebar && (
+          <>
+            <div 
+              className="fixed inset-0 bg-black bg-opacity-50 z-10 lg:hidden"
+              onClick={() => setShowSidebar(false)}
+            />
+            <div className="fixed left-0 top-16 bottom-0 w-80 z-20 lg:hidden">
+              <ContactList
+                users={users}
+                rooms={rooms}
+                selectedUser={selectedUser}
+                selectedRoom={selectedRoom}
+                selectUser={(user) => {
+                  selectUser(user);
+                  setShowSidebar(false);
+                }}
+                selectRoom={(room) => {
+                  selectRoom(room);
+                  setShowSidebar(false);
+                }}
+                createRoom={createRoom}
+                showSidebar={showSidebar}
+                onManageGroup={(room) => {
+                  console.log('Opening group management for room:', room);
+                  console.log('Current user:', user);
+                  setManagingRoom(room);
+                }}
+                user={user}
+                unreadByContact={unreadByContact}
+                unreadByRoom={unreadByRoom}
+              />
+            </div>
+          </>
+        )}
 
         {/* Main chat area or video call */}
         {inGroupCall && groupCallData ? (
@@ -2005,6 +2154,18 @@ const Dashboard = () => {
 
       {/* Socket connection status */}
       <SocketStatus />
+
+      {/* Notification Settings Modal */}
+      {showNotificationSettings && (
+        <div className="fixed bottom-4 right-4 z-50 max-w-md">
+          <NotificationSettings 
+            onClose={() => {
+              setShowNotificationSettings(false);
+              setNotificationPermission(notificationManager.getPermissionStatus());
+            }}
+          />
+        </div>
+      )}
 
       <CreateGroupModal
         isOpen={showCreateGroupModal}

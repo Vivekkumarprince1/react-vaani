@@ -5,7 +5,7 @@ import axios from 'axios';
 
 const API_URL = import.meta.env.VITE_API_URL || '/api';
 
-export const LanguagePreferences = ({ selectedLanguage, onLanguageChange }) => {
+export const LanguagePreferences = ({ selectedLanguage, onLanguageChange, isMobile = false }) => {
   const [languages, setLanguages] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -82,21 +82,21 @@ export const LanguagePreferences = ({ selectedLanguage, onLanguageChange }) => {
   }
 
   return (
-    <div className=" w-48">
+    <div className={`${isMobile ? 'w-full p-2' : 'w-48'}`}>
       <Select
         value={languages.find(lang => lang.value === selectedLanguage)}
         onChange={handleLanguageChange}
         options={languages}
-        className="basic-single text-black"
+        className={`basic-single text-black ${isMobile ? 'text-sm' : ''}`}
         classNamePrefix="select"
         isSearchable={true}
         name="language"
         placeholder="Language"
         components={{ Option: customOption }}
         formatOptionLabel={(option) => (
-          <div className="flex items-center">
+          <div className={`flex items-center ${isMobile ? 'text-sm' : ''}`}>
             <span className="font-medium">{option.label}</span>
-            <span className="text-gray-500 ml-2 text-sm">({option.nativeName})</span>
+            <span className="text-gray-500 ml-2 text-xs">{option.nativeName}</span>
           </div>
         )}
       />
