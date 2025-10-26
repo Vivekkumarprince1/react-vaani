@@ -1,5 +1,6 @@
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
+import socketManager from '../utils/socketManager';
 import { useTranslation } from '../contexts/TranslationContext';
 import CallButtons from './CallButtons';
 
@@ -170,6 +171,36 @@ const MessageSection = ({
         };
     }, [messages, visibleMessageIds]);
 
+    // Note: Status updates are now managed by Dashboard state updates, not here
+
+    // Note: messageDelivered is now emitted from Dashboard's central receiveMessage handler
+    // to avoid duplication. No need to emit here.
+
+    // Emit messageSeen when messages become visible via IntersectionObserver
+    useEffect(() => {
+        if (!visibleMessageIds || visibleMessageIds.size === 0) return;
+
+        const toMark = [];
+        messages.forEach(m => {
+            const id = m._id || m.id;
+            if (!id) return;
+            const fromOther = !(m.sender?._id === user?._id || m.sender === user?._id);
+            const alreadySeen = (m.status === 'seen');
+            if (visibleMessageIds.has(id) && fromOther && !alreadySeen) {
+                toMark.push(id);
+            }
+        });
+
+        if (toMark.length > 0) {
+            try {
+                console.log(`👁️ [MessageSection] Emitting messageSeen for ${toMark.length} messages:`, toMark);
+                socketManager.emit('messageSeen', { messageIds: toMark });
+            } catch (e) {
+                console.error('❌ [MessageSection] Error emitting messageSeen:', e);
+            }
+        }
+    }, [visibleMessageIds, messages, user]);
+
     // Reset translations when language changes
     useEffect(() => {
         setTranslatedMessages(new Map());
@@ -317,11 +348,57 @@ const MessageSection = ({
                                     isCurrentUser ? 'text-emerald-100' : 'text-gray-500'
                                 }`}>
                                     <span>{formatTime ? formatTime(msg.timestamp) : new Date(msg.timestamp).toLocaleTimeString()}</span>
-                                    {isCurrentUser && (
-                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                        </svg>
-                                    )}
+                                    {isCurrentUser && (() => {
+    const baseClass = "h-4 w-4 ml-1 transition-all duration-200";
+    const status = msg.status;
+
+    // Queued (Clock)
+    if (status === 'queued') {
+        return (
+            <svg xmlns="http://www.w3.org/2000/svg" className={`${baseClass} text-white/80`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l2 2" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 20.25A8.25 8.25 0 1112 3.75v0a8.25 8.25 0 010 16.5z" />
+            </svg>
+        );
+    }
+
+    // Sent (Single check)
+    if (status === 'sent' || !status) {
+        return (
+            <svg xmlns="http://www.w3.org/2000/svg" className={`${baseClass} text-white/80`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+        );
+    }
+
+    // Delivered (Double check - gray/white)
+    if (status === 'delivered') {
+        return (
+            <svg xmlns="http://www.w3.org/2000/svg" className={`${baseClass} text-white`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M2 13l4 4L16 3" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+        );
+    }
+
+    // Seen (Double check - blue)
+    if (status === 'seen') {
+        return (
+            <svg xmlns="http://www.w3.org/2000/svg" className={`${baseClass} text-blue-400`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M2 13l4 4L16 3" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+        );
+    }
+
+    // Fallback single check
+    return (
+        <svg xmlns="http://www.w3.org/2000/svg" className={`${baseClass} text-white/80`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+        </svg>
+    );
+})()}
+
                                 </div>
                             </div>
                         </div>

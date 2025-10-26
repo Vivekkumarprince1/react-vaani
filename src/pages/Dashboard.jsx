@@ -35,6 +35,10 @@ const Dashboard = () => {
   const [isTyping, setIsTyping] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadingMessage, setLoadingMessage] = useState("Loading...");
+  
+  // Unread message counts
+  const [unreadByContact, setUnreadByContact] = useState({});
+  const [unreadByRoom, setUnreadByRoom] = useState({});
 
   // Video call state
   const [inCall, setInCall] = useState(false);
@@ -64,6 +68,8 @@ const Dashboard = () => {
   const selectedUserRef = useRef(selectedUser);
   const selectedRoomRef = useRef(selectedRoom);
   const roomsRef = useRef([]);
+  const currentLanguageRef = useRef(currentLanguage);
+  const userRef = useRef(user);
 
   // Refs
   const localVideoRef = useRef(null);
@@ -163,6 +169,39 @@ const Dashboard = () => {
         setMessages(data.messages || []);
       }
       setMessagesPageHasMore(Boolean(data.hasMore));
+      
+      // Mark unread messages as seen
+      if (data.messages && data.messages.length > 0 && !opts.append) {
+        const currentUserId = user?._id || user?.id;
+        const unseenMessageIds = data.messages
+          .filter(msg => {
+            const senderId = msg.sender?._id || msg.sender;
+            const msgStatus = msg.status;
+            return senderId !== currentUserId && msgStatus !== 'seen';
+          })
+          .map(msg => msg._id || msg.id)
+          .filter(Boolean);
+        
+        if (unseenMessageIds.length > 0) {
+          // Emit to server to mark as seen
+          socketManager.emit('messageSeen', { messageIds: unseenMessageIds });
+          
+          // Clear unread count for this contact/room locally
+          if (userId) {
+            setUnreadByContact(prev => {
+              const updated = { ...prev };
+              delete updated[userId];
+              return updated;
+            });
+          } else if (roomId) {
+            setUnreadByRoom(prev => {
+              const updated = { ...prev };
+              delete updated[roomId];
+              return updated;
+            });
+          }
+        }
+      }
     } catch (err) {
       console.error('Error fetching messages:', err);
       setMessages([]);
@@ -198,6 +237,28 @@ const Dashboard = () => {
       console.error('Error fetching pending group calls:', err);
     }
   };
+
+  // Fetch unread message counts
+  const fetchUnreadCounts = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const res = await axios.get(`${API_URL}/chat/unread-counts`, {
+        headers: { 'x-auth-token': token }
+      });
+      setUnreadByContact(res.data.unreadByContact || {});
+      setUnreadByRoom(res.data.unreadByRoom || {});
+    } catch (err) {
+      console.error('Error fetching unread counts:', err);
+    }
+  };
+
+  // Keep refs up to date to avoid stale closures in socket listeners
+  useEffect(() => {
+    selectedUserRef.current = selectedUser;
+    selectedRoomRef.current = selectedRoom;
+    currentLanguageRef.current = currentLanguage;
+    userRef.current = user;
+  }, [selectedUser, selectedRoom, currentLanguage, user]);
 
   // Initialize Socket.IO
   useEffect(() => {
@@ -236,35 +297,181 @@ const Dashboard = () => {
       
       // Listen for real-time messages
       socketManager.on('receiveMessage', async (msg) => {
-        console.log('💬 Received message:', msg);
-
+        console.log('💬 [RECEIVE_MESSAGE EVENT] Received:', msg);
+        
         // Use refs to avoid stale closures (selectedUser/selectedRoom may change)
         const selUser = selectedUserRef.current;
         const selRoom = selectedRoomRef.current;
 
-        // Determine whether this message should be appended to the current view
-        const shouldAppend = (selUser && ((msg.sender && (msg.sender._id === selUser.id || msg.sender._id === selUser._id)) || msg.senderId === selUser.id)) ||
-                             (selRoom && (msg.room === selRoom._id || msg.roomId === selRoom._id));
+        // Debug: Log what we're comparing
+        const senderIdFromMsg = msg.sender?._id || msg.sender?.id || msg.sender;
+        const selectedUserId = selUser?.id || selUser?._id;
+        
+        console.log(`   � Message details:`, {
+          senderFromMsg: senderIdFromMsg,
+          senderFullObj: msg.sender,
+          selectedUser: {
+            id: selUser?.id,
+            _id: selUser?._id,
+            name: selUser?.name
+          },
+          room: {
+            msgRoom: msg.room || msg.roomId,
+            selectedRoom: selRoom?._id
+          },
+          clientTempId: msg.clientTempId
+        });
 
-        if (!shouldAppend) return;
+        // Determine whether this message should be appended to the current view
+        // For sender's own messages: check if RECEIVER matches selected user
+        // For incoming messages: check if SENDER matches selected user
+        const currentUserId = userRef.current?._id || userRef.current?.id;
+        const isSelfMessage = senderIdFromMsg === currentUserId?.toString() || senderIdFromMsg === currentUserId;
+        
+        const receiverIdFromMsg = msg.receiver?._id || msg.receiver || msg.receiverId;
+        
+        const isSenderMatch = selUser && (
+          senderIdFromMsg === selectedUserId || 
+          senderIdFromMsg === selUser.id || 
+          senderIdFromMsg === selUser._id ||
+          senderIdFromMsg?.toString() === selectedUserId?.toString()
+        );
+        
+        const isReceiverMatch = selUser && receiverIdFromMsg && (
+          receiverIdFromMsg === selectedUserId || 
+          receiverIdFromMsg === selUser.id || 
+          receiverIdFromMsg === selUser._id ||
+          receiverIdFromMsg?.toString() === selectedUserId?.toString()
+        );
+        
+        const isRoomMatch = selRoom && (msg.room === selRoom._id || msg.roomId === selRoom._id);
+        
+        // If it's my own message, check receiver matches. If it's incoming, check sender matches
+        const shouldAppend = (isSelfMessage && isReceiverMatch) || (!isSelfMessage && isSenderMatch) || isRoomMatch;
+        console.log(`   ✅ Should append: ${shouldAppend} (isSelf: ${isSelfMessage}, senderMatch: ${isSenderMatch}, receiverMatch: ${isReceiverMatch}, roomMatch: ${isRoomMatch})`);
+
+        if (!shouldAppend) {
+          console.log(`   ⏭️ Skipping - message not relevant to current view (selUser: ${selUser?.name}, selRoom: ${selRoom?.name})`);
+          
+          // If message is not for current view but is for this user, refresh unread counts
+          if (!isSelfMessage) {
+            fetchUnreadCounts();
+          }
+          
+          return;
+        }
 
         try {
           // Translate incoming message into the user's preferred language before appending
-          const translatedContent = await translateText(msg.content, currentLanguage, null);
+          const translatedContent = await translateText(msg.content, currentLanguageRef.current, null);
           // Attach translated content so MessageSection will display the preferred language immediately
           const msgWithTranslated = { ...msg, content: translatedContent, _originalContent: msg.content };
           setMessages(prev => {
-            const id = msgWithTranslated._id || msgWithTranslated.id || `${msgWithTranslated.timestamp}-${msgWithTranslated.sender}`;
-            if (prev.some(m => (m._id || m.id) === id)) return prev;
+            const persistedId = msgWithTranslated._id || msgWithTranslated.id || `${msgWithTranslated.timestamp}-${msgWithTranslated.sender}`;
+            console.log(`   🔍 Looking for existing message with id: ${persistedId}`);
+            // If already present by persisted id, do nothing
+            if (prev.some(m => (m._id || m.id) === persistedId)) {
+              console.log(`   ℹ️ Message already present by persisted id, skipping`);
+              return prev;
+            }
+            // If we have an optimistic message with clientTempId, replace it
+            if (msgWithTranslated.clientTempId) {
+              console.log(`   🔍 Looking for optimistic message with clientTempId: ${msgWithTranslated.clientTempId}`);
+              const idx = prev.findIndex(m => (m._id === msgWithTranslated.clientTempId) || (m.id === msgWithTranslated.clientTempId));
+              if (idx !== -1) {
+                console.log(`   ✅ FOUND optimistic message at index ${idx}, replacing with persisted message`);
+                const copy = prev.slice();
+                copy[idx] = msgWithTranslated;
+                return copy;
+              } else {
+                console.log(`   ⚠️ No optimistic message found with clientTempId`);
+              }
+            }
+            console.log(`   ➕ Appending new message`);
             return [...prev, msgWithTranslated];
           });
+          // Acknowledge delivery to server when this client (recipient) receives the message
+          try {
+            const messageId = msg._id || msg.id || null;
+            const isFromOther = !(msg.sender && ((msg.sender._id && msg.sender._id === (userRef.current?._id || userRef.current?.id)) || (msg.sender === (userRef.current?._id || userRef.current?.id))));
+            if (messageId && isFromOther) {
+              console.log(`📨 [Dashboard] Emitting messageDelivered for messageId=${messageId}`);
+              socketManager.emit('messageDelivered', { messageId, clientTempId: msg.clientTempId || null });
+            }
+          } catch (e) {
+            console.error('❌ [Dashboard] Error emitting messageDelivered:', e);
+          }
         } catch (err) {
           console.warn('Translation on receive failed, appending original message:', err);
           setMessages(prev => {
-            const id = msg._id || msg.id || `${msg.timestamp}-${msg.sender}`;
-            if (prev.some(m => (m._id || m.id) === id)) return prev;
+            const persistedId = msg._id || msg.id || `${msg.timestamp}-${msg.sender}`;
+            if (prev.some(m => (m._id || m.id) === persistedId)) return prev;
+            if (msg.clientTempId) {
+              const idx = prev.findIndex(m => (m._id === msg.clientTempId) || (m.id === msg.clientTempId));
+              if (idx !== -1) {
+                const copy = prev.slice();
+                copy[idx] = msg;
+                return copy;
+              }
+            }
             return [...prev, msg];
           });
+          // Acknowledge delivery in fallback path as well
+          try {
+            const messageId = msg._id || msg.id || null;
+            const isFromOther = !(msg.sender && ((msg.sender._id && msg.sender._id === (userRef.current?._id || userRef.current?.id)) || (msg.sender === (userRef.current?._id || userRef.current?.id))));
+            if (messageId && isFromOther) {
+              socketManager.emit('messageDelivered', { messageId, clientTempId: msg.clientTempId || null });
+            }
+          } catch (e) {
+            // ignore
+          }
+        }
+      });
+
+      // Listen for message status updates (queued -> sent -> delivered -> seen)
+      socketManager.on('messageStatusUpdate', (payload) => {
+        try {
+          const { messageId, status, clientTempId } = payload || {};
+          console.log(`🔄 [Dashboard] messageStatusUpdate received: messageId=${messageId}, status=${status}, clientTempId=${clientTempId}`);
+          
+          if (!messageId && !clientTempId) {
+            console.warn('⚠️ [Dashboard] messageStatusUpdate missing both messageId and clientTempId, ignoring');
+            return;
+          }
+
+          setMessages(prev => {
+            console.log(`   📊 Current messages array (${prev.length} items):`);
+            prev.forEach((m, idx) => {
+              console.log(`     [${idx}] _id=${m._id}, id=${m.id}, clientTempId=${m.clientTempId}, status=${m.status}`);
+            });
+            
+            const key = messageId || clientTempId;
+            console.log(`   🔍 Looking for key: "${key}"`);
+            
+            const updatedMessages = prev.map(m => {
+              const mId = m._id || m.id;
+              const mTempId = m.clientTempId;
+              const matchesId = mId && mId.toString() === key.toString();
+              const matchesTempId = mTempId && mTempId.toString() === key.toString();
+              
+              if (matchesId || matchesTempId) {
+                console.log(`   ✅ MATCH FOUND! mId=${mId} (matches=${matchesId}), mTempId=${mTempId} (matches=${matchesTempId})`);
+                console.log(`      Updating status from "${m.status}" to "${status}"`);
+                return { ...m, status };
+              }
+              return m;
+            });
+            
+            const wasUpdated = updatedMessages.some((m, idx) => JSON.stringify(m) !== JSON.stringify(prev[idx]));
+            if (!wasUpdated) {
+              console.log(`   ❌ NO MATCH FOUND! messageId=${messageId}, clientTempId=${clientTempId}`);
+            }
+            
+            return updatedMessages;
+          });
+        } catch (e) {
+          console.warn('❌ Error handling messageStatusUpdate:', e);
         }
       });
 
@@ -474,13 +681,15 @@ const Dashboard = () => {
       // Continue without real-time features
     }
 
+    // Don't cleanup socket on component unmount - let it persist
+    // Only cleanup if explicitly logging out
     return () => {
+      // Clean up event listeners if navigating away
       try {
-        if (socketManager.socket) {
-          socketManager.cleanup();
-        }
+        // Don't fully cleanup; just remove specific listeners we added
+        // socketManager.cleanup() is too aggressive - it disconnects the socket
       } catch (error) {
-        console.warn('Socket cleanup error:', error);
+        console.warn('Socket listener cleanup error:', error);
       }
     };
   }, [isAuthenticated, user]);
@@ -493,6 +702,7 @@ const Dashboard = () => {
         await fetchUsers();
         await fetchRooms();
         await fetchPendingGroupCalls();
+        await fetchUnreadCounts();
 
         // Join socket.io rooms for real-time updates (so receiveMessage and room events reach this client)
         try {
@@ -635,6 +845,22 @@ const Dashboard = () => {
       const token = localStorage.getItem('token');
       // clientTempId helps correlate optimistic UI messages with the server-emitted saved message
       const clientTempId = `${Date.now()}-${Math.random().toString(36).slice(2,9)}`;
+      // Create optimistic (queued) message in local state so UI shows queued immediately
+      const optimisticMessage = {
+        _id: clientTempId, // temporary id until server provides real _id
+        id: clientTempId,
+        clientTempId,
+        sender: { _id: user?._id || user?.id, username: user?.username || user?.name },
+        content: message,
+        originalContent: message,
+        timestamp: new Date().toISOString(),
+        status: 'queued',
+        room: selectedRoom?._id || null,
+        receiver: selectedUser?.id || null,
+        isGroupMessage: Boolean(selectedRoom)
+      };
+      setMessages(prev => [...prev, optimisticMessage]);
+
       const payload = {
         content: message,
         clientTempId,
@@ -679,6 +905,7 @@ const Dashboard = () => {
 
       if (savedViaSocket) {
         // Server already emitted the saved message; append it (dedupe in handler will ignore duplicates)
+        // Remove optimistic queued message if present (handler dedupe will avoid duplicates; still clear input)
         setMessage('');
       } else {
         // Fallback: use API response
@@ -1607,6 +1834,8 @@ const Dashboard = () => {
             setManagingRoom(room);
           }}
           user={user}
+          unreadByContact={unreadByContact}
+          unreadByRoom={unreadByRoom}
         />
 
         {/* Main chat area or video call */}

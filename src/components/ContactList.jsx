@@ -13,7 +13,9 @@ const ContactList = ({
     createRoom, 
     showSidebar,
     onManageGroup,
-    user 
+    user,
+    unreadByContact = {},
+    unreadByRoom = {}
 }) => {
     const { t } = useTranslation();
 
@@ -98,6 +100,7 @@ const ContactList = ({
 
                                     const displayStatus = isSelf ? (socketManager.isSocketConnected() ? 'online' : 'offline') : (contact.status || 'offline');
                                     const lastSeen = contact.lastSeen || contact.lastActive || contact.last_activity;
+                                    const unreadCount = unreadByContact[contactId] || 0;
 
                                     return (
                                     <li
@@ -111,6 +114,11 @@ const ContactList = ({
                                             <div className="w-12 h-12 rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 text-white flex items-center justify-center text-lg font-semibold shadow-md">
                                                 {contact.avatar}
                                             </div>
+                                            {unreadCount > 0 && (
+                                                <div className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center shadow-lg">
+                                                    {unreadCount > 9 ? '9+' : unreadCount}
+                                                </div>
+                                            )}
                                         </div>
                                         <div className="ml-3 flex-1">
                                             <div className="flex items-center justify-between">
@@ -145,6 +153,7 @@ const ContactList = ({
                                     const isAdmin = room.admins?.some(admin => 
                                         admin.toString() === user?.id || admin._id?.toString() === user?.id
                                     );
+                                    const unreadCount = unreadByRoom[room._id] || 0;
 
                                     return (
                                     <li
@@ -154,8 +163,15 @@ const ContactList = ({
                                         }`}
                                         onClick={() => selectRoom(room)}
                                     >
-                                        <div className="w-12 h-12 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 text-white flex items-center justify-center text-lg font-semibold shadow-md">
-                                            {room.name?.[0]?.toUpperCase() || 'G'}
+                                        <div className="relative">
+                                            <div className="w-12 h-12 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 text-white flex items-center justify-center text-lg font-semibold shadow-md">
+                                                {room.name?.[0]?.toUpperCase() || 'G'}
+                                            </div>
+                                            {unreadCount > 0 && (
+                                                <div className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center shadow-lg">
+                                                    {unreadCount > 9 ? '9+' : unreadCount}
+                                                </div>
+                                            )}
                                         </div>
                                         <div className="ml-3 flex-1">
                                             <div className="flex items-center justify-between">
