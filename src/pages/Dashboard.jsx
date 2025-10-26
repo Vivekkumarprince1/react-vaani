@@ -470,6 +470,12 @@ const Dashboard = () => {
             
             return updatedMessages;
           });
+          
+          // Refresh unread counts when status changes to 'delivered' or 'seen'
+          // This handles cases where messages are marked as seen from other devices/tabs
+          if (status === 'delivered' || status === 'seen') {
+            fetchUnreadCounts();
+          }
         } catch (e) {
           console.warn('❌ Error handling messageStatusUpdate:', e);
         }
